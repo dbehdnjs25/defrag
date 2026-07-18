@@ -38,11 +38,12 @@ class PlayScene(Scene):
         self.backpack = Folder(cap_mb=config.BACKPACK_CAP_MB)
         self.documents = Folder(cap_mb=config.DOCUMENTS_CAP_MB)
         self.hotbar = Hotbar.create()
-        self.hotbar.slots[0] = MiningTool()  # slot 1 (key "2") stays empty for the weapon
+        # slot 0 holds the mining tool; the other unlocked slot (key "2") is
+        # reserved for the weapon, added by the combat milestone.
+        self.hotbar.slots[0] = MiningTool()
         self.fragments: list[Fragment] = []
         self.spawner = Spawner()
         self.rng = random.Random(1234)
-        self.status = mining.IDLE
 
         self._held_keys: set[int] = set()
         self._mouse_screen = pygame.Vector2(config.SCREEN_WIDTH / 2, config.SCREEN_HEIGHT / 2)
@@ -87,7 +88,7 @@ class PlayScene(Scene):
         self.player.update(dt, self._move_dir(), config.WORLD_SIZE)
         self.camera.update(dt, self.player.pos, self._mouse_screen, self._mouse_held)
         aim_world = self.camera.screen_to_world(self._mouse_screen)
-        self.status = mining.update_mining(
+        mining.update_mining(
             dt,
             active_tool=self.hotbar.active_tool,
             held=self._mouse_held,
