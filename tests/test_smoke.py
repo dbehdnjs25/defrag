@@ -1,8 +1,4 @@
-"""Headless smoke tests: exercise the rendering path without a real window.
-
-These use the off-screen ``surface`` fixture (from conftest) so they run on a
-CI box with no display. They prove pygame is wired up and the draw code runs.
-"""
+"""Headless smoke tests: exercise the rendering path without a real window."""
 
 from __future__ import annotations
 
@@ -15,19 +11,12 @@ def test_config_screen_size_is_consistent() -> None:
     assert config.FIXED_DT == 1.0 / config.FPS
 
 
-def test_play_scene_draws_something_onto_surface(surface) -> None:
-    """After drawing the white ball, at least one pixel is non-background."""
+def test_play_scene_draws_non_background_pixels(surface) -> None:
+    """Drawing the world (floor, core, player) paints over the background."""
     scene = PlayScene()
-    scene.ball.x, scene.ball.y = 32, 32  # centre it on the 64x64 surface
     surface.fill(config.BACKGROUND)
 
     scene.draw(surface)
 
-    assert surface.get_at((32, 32))[:3] == config.WHITE
-
-
-def test_play_scene_update_advances_ball(surface) -> None:
-    scene = PlayScene()
-    start = scene.ball.position
-    scene.update(dt=0.1)
-    assert scene.ball.position != start
+    pixels = {surface.get_at((x, y))[:3] for x in range(64) for y in range(64)}
+    assert pixels != {config.BACKGROUND}

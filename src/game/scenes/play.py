@@ -1,35 +1,146 @@
-"""Example gameplay scene: a single ball bouncing around the window.
-
-This is scaffolding to prove the architecture end-to-end (input -> update ->
-draw) and to give ``python -m game`` something to show. Replace it with the
-real game once you've decided what to build.
-"""
+"""Core-loop gameplay scene: mine fragments, fill the backpack, return to the
+core to auto-sync into /Documents. Wires the entities and systems together;
+accumulates input from events (no polling) and owns all rendering."""
 
 from __future__ import annotations
+
+import random
 
 import pygame
 
 from game import config
 from game.core.scene import Scene
-from game.entities.ball import Ball
+from game.entities.core import Core
+from game.entities.fragment import Fragment
+from game.entities.player import Player
+from game.inventory.hotbar import Hotbar
+from game.inventory.storage import Folder, transfer
+from game.items.tools import MiningTool
+from game.systems import mining
+from game.systems.camera import LOCKED, Camera
+from game.systems.spawner import Spawner
+
+_MOVE_KEYS = {pygame.K_w, pygame.K_a, pygame.K_s, pygame.K_d}
 
 
 class PlayScene(Scene):
     def __init__(self) -> None:
-        self.ball = Ball(
-            x=config.SCREEN_WIDTH / 2,
-            y=config.SCREEN_HEIGHT / 2,
-            vx=220.0,
-            vy=160.0,
+        center = pygame.Vector2(config.WORLD_WIDTH / 2, config.WORLD_HEIGHT / 2)
+        self.core = Core(pos=pygame.Vector2(center))
+        self.player = Player(pos=pygame.Vector2(center))
+        self.camera = Camera(
+            offset=pygame.Vector2(0, 0),
+            view_size=config.SCREEN_SIZE,
+            world_size=config.WORLD_SIZE,
+            mode=LOCKED,
         )
+        self.camera.center_on(self.player.pos)
+        self.backpack = Folder(cap_mb=config.BACKPACK_CAP_MB)
+        self.documents = Folder(cap_mb=config.DOCUMENTS_CAP_MB)
+        self.hotbar = Hotbar.create()
+        self.hotbar.slots[0] = MiningTool()  # slot 1 (key "2") stays empty for the weapon
+        self.fragments: list[Fragment] = []
+        self.spawner = Spawner()
+        self.rng = random.Random(1234)
+        self.status = mining.IDLE
 
+        self._held_keys: set[int] = set()
+        self._mouse_screen = pygame.Vector2(config.SCREEN_WIDTH / 2, config.SCREEN_HEIGHT / 2)
+        self._mouse_held = False
+
+    # --- input (event-driven, no polling) --------------------------------
     def handle_event(self, event: pygame.event.Event) -> None:
-        escape = event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
-        if escape and self.manager is not None:
-            self.manager.pop()
+        if event.type == pygame.KEYDOWN:
+            if event.key in _MOVE_KEYS:
+                self._held_keys.add(event.key)
+            elif event.key == pygame.K_1:
+                self.hotbar.select(0)
+            elif event.key == pygame.K_2:
+                self.hotbar.select(1)
+            elif event.key == pygame.K_y:
+                self.camera.toggle_lock(self.player.pos)
+            elif event.key == pygame.K_ESCAPE and self.manager is not None:
+                self.manager.pop()
+        elif event.type == pygame.KEYUP:
+            self._held_keys.discard(event.key)
+        elif event.type == pygame.MOUSEMOTION:
+            self._mouse_screen = pygame.Vector2(event.pos)
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            self._mouse_held = True
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            self._mouse_held = False
 
+    def _move_dir(self) -> pygame.Vector2:
+        direction = pygame.Vector2(0, 0)
+        if pygame.K_w in self._held_keys:
+            direction.y -= 1
+        if pygame.K_s in self._held_keys:
+            direction.y += 1
+        if pygame.K_a in self._held_keys:
+            direction.x -= 1
+        if pygame.K_d in self._held_keys:
+            direction.x += 1
+        return direction
+
+    # --- logic -----------------------------------------------------------
     def update(self, dt: float) -> None:
-        self.ball.update(dt, config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
+        self.player.update(dt, self._move_dir(), config.WORLD_SIZE)
+        self.camera.update(dt, self.player.pos, self._mouse_screen, self._mouse_held)
+        aim_world = self.camera.screen_to_world(self._mouse_screen)
+        self.status = mining.update_mining(
+            dt,
+            active_tool=self.hotbar.active_tool,
+            held=self._mouse_held,
+            aim_world=aim_world,
+            player_pos=self.player.pos,
+            fragments=self.fragments,
+            backpack=self.backpack,
+        )
+        self.spawner.update(dt, self.fragments, self.core, self.rng)
+        if self.core.is_in_sync_range(self.player.pos):
+            transfer(self.backpack, self.documents)
 
+    # --- rendering -------------------------------------------------------
     def draw(self, surface: pygame.Surface) -> None:
-        pygame.draw.circle(surface, config.WHITE, self.ball.position, self.ball.radius)
+        surface.fill(config.BACKGROUND)
+        self._draw_floor(surface)
+        for fragment in self.fragments:
+            pygame.draw.circle(
+                surface,
+                config.FRAGMENT_COLOR,
+                self.camera.world_to_screen(fragment.pos),
+                config.FRAGMENT_RADIUS,
+            )
+        pygame.draw.circle(
+            surface, config.CORE_COLOR, self.camera.world_to_screen(self.core.pos), self.core.radius
+        )
+        pygame.draw.circle(
+            surface,
+            config.PLAYER_COLOR,
+            self.camera.world_to_screen(self.player.pos),
+            self.player.radius,
+        )
+        self._draw_hud(surface)
+
+    def _draw_floor(self, surface: pygame.Surface) -> None:
+        view_w, view_h = surface.get_size()
+        tile = config.TILE_SIZE
+        off_x, off_y = int(self.camera.offset.x), int(self.camera.offset.y)
+        first_col, first_row = off_x // tile, off_y // tile
+        for row in range(first_row, (off_y + view_h) // tile + 1):
+            for col in range(first_col, (off_x + view_w) // tile + 1):
+                color = config.FLOOR_A if (row + col) % 2 == 0 else config.FLOOR_B
+                pygame.draw.rect(
+                    surface, color, pygame.Rect(col * tile - off_x, row * tile - off_y, tile, tile)
+                )
+
+    def _draw_hud(self, surface: pygame.Surface) -> None:
+        # backpack fill gauge (top-left)
+        pygame.draw.rect(surface, (60, 60, 80), pygame.Rect(10, 10, 120, 14))
+        frac = self.backpack.used_mb / self.backpack.cap_mb if self.backpack.cap_mb else 0.0
+        pygame.draw.rect(surface, (90, 200, 120), pygame.Rect(10, 10, int(120 * frac), 14))
+        # hotbar (bottom-left), only unlocked slots
+        for i in range(self.hotbar.unlocked):
+            x = 10 + i * 44
+            color = config.WHITE if i == self.hotbar.selected else (120, 120, 140)
+            pygame.draw.rect(surface, color, pygame.Rect(x, surface.get_height() - 50, 40, 40), 2)
