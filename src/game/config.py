@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Final
 
 # --- Window -----------------------------------------------------------------
-TITLE: Final[str] = "Pygame Project"
+TITLE: Final[str] = "Defrag"
 SCREEN_WIDTH: Final[int] = 960
 SCREEN_HEIGHT: Final[int] = 540
 SCREEN_SIZE: Final[tuple[int, int]] = (SCREEN_WIDTH, SCREEN_HEIGHT)
